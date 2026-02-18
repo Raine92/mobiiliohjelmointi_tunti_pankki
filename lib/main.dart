@@ -1,13 +1,56 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:intl/intl.dart'; 
+import 'package:timezone/data/latest_all.dart' as tz;
 import 'firebase_options.dart';
 import 'firestore_service.dart';
 
+// Globaali muuttuja notifikaatioille
+final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin = FlutterLocalNotificationsPlugin();
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  
+  // 1. Alustetaan Firebase
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+
+  // 2. Alustetaan aikavyöhykkeet (notifikaatiokirjaston vaatimus)
+  tz.initializeTimeZones();
+
+  // 3. Android-kohtaiset notifikaatioasetukset
+  const AndroidInitializationSettings initializationSettingsAndroid = AndroidInitializationSettings('@mipmap/ic_launcher');
+  
+  const InitializationSettings initializationSettings = InitializationSettings(
+    android: initializationSettingsAndroid
+  );
+
+  // Alustetaan plugin käyttäen nimettyä parametria 'settings'
+  await flutterLocalNotificationsPlugin.initialize(
+    settings: initializationSettings,
+  );
+
   runApp(const TuntiPankkiApp());
+}
+
+// Apufunktio ilmoituksen lähettämiseen (Vain Android)
+void naytaIlmoitus(String otsikko, String viesti) async {
+  const AndroidNotificationDetails androidDetails = AndroidNotificationDetails(
+    'tunti_kanava', 
+    'Tuntikirjaukset',
+    importance: Importance.max, 
+    priority: Priority.high,
+  );
+  
+  const NotificationDetails details = NotificationDetails(android: androidDetails);
+
+  await flutterLocalNotificationsPlugin.show(
+    id: 0, 
+    title: otsikko, 
+    body: viesti, 
+    notificationDetails: details,
+  );
 }
 
 class TuntiPankkiApp extends StatelessWidget {
@@ -17,7 +60,10 @@ class TuntiPankkiApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue), useMaterial3: true),
+      theme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
+        useMaterial3: true,
+      ),
       home: const TuntipankkiHome(),
     );
   }
@@ -43,11 +89,15 @@ class _TuntipankkiHomeState extends State<TuntipankkiHome> {
           StreamBuilder<DocumentSnapshot>(
             stream: _service.getSaldoStream(),
             builder: (context, snapshot) {
-              double s = (snapshot.hasData && snapshot.data!.exists) ? snapshot.data!['euroa'] : 0.0;
+              double s = (snapshot.hasData && snapshot.data!.exists) ? (snapshot.data!['euroa'] as num).toDouble() : 0.0;
               return Padding(
                 padding: const EdgeInsets.only(right: 20),
-                child: Center(child: Text("${s.toStringAsFixed(2)} €", 
-                  style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.blue))),
+                child: Center(
+                  child: Text(
+                    "${s.toStringAsFixed(2)} €", 
+                    style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.blue)
+                  ),
+                ),
               );
             },
           ),
@@ -96,7 +146,10 @@ class _LisaaTuntejaSivuState extends State<LisaaTuntejaSivu> {
           const Text("KIRJAA TUNTEJA", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
           const SizedBox(height: 20),
           SegmentedButton<String>(
-            segments: const [ButtonSegment(value: 'Aki', label: Text('Aki')), ButtonSegment(value: 'Janne', label: Text('Janne'))],
+            segments: const [
+              ButtonSegment(value: 'Aki', label: Text('Aki')), 
+              ButtonSegment(value: 'Janne', label: Text('Janne'))
+            ],
             selected: {_kayttaja},
             onSelectionChanged: (val) => setState(() => _kayttaja = val.first),
           ),
@@ -112,11 +165,20 @@ class _LisaaTuntejaSivuState extends State<LisaaTuntejaSivu> {
           ),
           const Spacer(),
           ElevatedButton(
-            onPressed: () {
-              widget.service.lisaaTunnit(_kayttaja, _tunnit);
-              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Tunnit tallennettu!")));
+            onPressed: () async {
+              await widget.service.lisaaTunnit(_kayttaja, _tunnit);
+              
+              // KORJAUS 1: Tarkistetaan contextin tila asynkronisen gapin jälkeen
+              if (!context.mounted) return;
+              
+              naytaIlmoitus("Tunnit kirjattu!", "$_kayttaja lisäsi $_tunnit tuntia.");
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Tunnit tallennettu!")));
             },
-            style: ElevatedButton.styleFrom(minimumSize: const Size.fromHeight(60), backgroundColor: Colors.blue, foregroundColor: Colors.white),
+            style: ElevatedButton.styleFrom(
+              minimumSize: const Size.fromHeight(60), 
+              backgroundColor: Colors.blue, 
+              foregroundColor: Colors.white
+            ),
             child: const Text("TALLENNA"),
           ),
         ],
@@ -163,15 +225,24 @@ class _NostaRahaaSivuState extends State<NostaRahaaSivu> {
           ),
           const SizedBox(height: 20),
           ElevatedButton(
-            onPressed: () {
+            onPressed: () async {
               double? summa = double.tryParse(_controller.text);
               if (summa != null) {
-                widget.service.nostaRahaa(_kayttaja, summa);
+                await widget.service.nostaRahaa(_kayttaja, summa);
+                
+                // KORJAUS 2: Tarkistetaan contextin tila asynkronisen gapin jälkeen
+                if (!context.mounted) return;
+                
+                naytaIlmoitus("Nosto suoritettu!", "$_kayttaja nosti $summa €.");
                 _controller.clear();
                 ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Nosto suoritettu!")));
               }
             },
-            style: ElevatedButton.styleFrom(minimumSize: const Size.fromHeight(60), backgroundColor: Colors.red.shade400, foregroundColor: Colors.white),
+            style: ElevatedButton.styleFrom(
+              minimumSize: const Size.fromHeight(60), 
+              backgroundColor: Colors.red.shade400, 
+              foregroundColor: Colors.white
+            ),
             child: const Text("NOSTA RAHAT"),
           ),
         ],
@@ -200,12 +271,21 @@ class YhteenvetoSivu extends StatelessWidget {
             var doc = snapshot.data!.docs[index];
             bool onLisays = doc['tyyppi'] == 'lisays';
             
+            String pvmText = "...";
+            if (doc['aika'] != null) {
+              DateTime pvm = (doc['aika'] as Timestamp).toDate();
+              String muotoiltuAika = DateFormat("d.M.yyyy 'klo' HH.mm").format(pvm);
+              pvmText = muotoiltuAika;
+            }
+            
             return ListTile(
               leading: Icon(onLisays ? Icons.add_circle : Icons.remove_circle, color: onLisays ? Colors.green : Colors.red),
               title: Text("${doc['tekija']} (${doc['maara']} ${doc['yksikko']})"),
-              subtitle: Text(doc['aika'] != null ? (doc['aika'] as Timestamp).toDate().toString().substring(0, 16) : "..."),
-              trailing: Text("${onLisays ? '+' : '-'}${doc['summa'].toStringAsFixed(2)} €", 
-                style: TextStyle(fontWeight: FontWeight.bold, color: onLisays ? Colors.green : Colors.red)),
+              subtitle: Text(pvmText),
+              trailing: Text(
+                "${onLisays ? '+' : '-'}${doc['summa'].toStringAsFixed(2)} €", 
+                style: TextStyle(fontWeight: FontWeight.bold, color: onLisays ? Colors.green : Colors.red)
+              ),
             );
           },
         );
